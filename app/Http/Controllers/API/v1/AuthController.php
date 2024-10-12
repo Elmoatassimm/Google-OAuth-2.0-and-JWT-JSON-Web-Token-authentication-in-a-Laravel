@@ -3,24 +3,34 @@
 namespace App\Http\Controllers\API\v1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\GoogleAuthRequest;
 use App\Http\Requests\LoginRequest;
 use App\Http\Requests\RegisterRequest;
 use App\Models\User;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Laravel\Socialite\Facades\Socialite;
 use Illuminate\Support\Str;
 use App\Services\ResponseService;
 use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+
+use GuzzleHttp\Exception\ClientException;
+use GuzzleHttp\Psr7\Request;
+use Illuminate\Http\JsonResponse;
+use Laravel\Socialite\Contracts\User as SocialiteUser;
+
+use function Pest\Laravel\json;
 
 class AuthController extends Controller
 {
+
     protected $responseService;
 
-    // Injecting ResponseService through the constructor
     public function __construct(ResponseService $responseService)
     {
         $this->responseService = $responseService;
-        // Set the locale based on the request, default to 'en'
         $locale = request()->get('lang', 'en');
         App::setLocale($locale);
     }
@@ -33,10 +43,10 @@ class AuthController extends Controller
     public function register(RegisterRequest $request)
     {
         $user = new User;
-        $user->name = request()->name;
-        $user->email = request()->email;
-        $user->password = bcrypt(request()->password);
-        $user->role = request()->role;
+        $user->name = $request->input('name');
+        $user->email = $request->input('email');
+        $user->password = bcrypt($request->input('password'));
+        $user->role = $request->input('role');
         $user->save();
 
         return $this->responseService->success(trans('messages.user_registered_successfully'), [
@@ -54,7 +64,7 @@ class AuthController extends Controller
      */
     public function login(LoginRequest $request)
     {
-        $credentials = request()->only(['email', 'password']);
+        $credentials = $request->only(['email', 'password']);
 
         if (!$token = auth()->attempt($credentials)) {
             return $this->responseService->error(trans('messages.invalid_credentials'), [], 401);
@@ -68,33 +78,53 @@ class AuthController extends Controller
      *
      * @return \Illuminate\Http\JsonResponse
      */
-    public function handleGoogleCallback()
+    public function GoogleAuth(GoogleAuthRequest $request)
     {
-        $googleUser = Socialite::driver('google')->user();
+        
+        $validatedData = $request->validated();
+    
 
-        // Find or create the user
-        $authUser = User::firstOrCreate(
-            ['email' => $googleUser->email],
-            [
-                'name' => $googleUser->name,
-                'google_id' => $googleUser->id,
-                'avatar' => $googleUser->avatar,
-                'email_verified_at' => now(),
-                'password' => bcrypt(Str::random(16)),
-            ]
-        );
+    
 
-        // Generate a token for the user
-        $token = auth()->login($authUser);
+    
+    $authUser = User::firstOrCreate(
+        ['email' => $validatedData['email']],
+        [
+            'name' => $validatedData['name'],
+            'google_id' => $validatedData['id'],
+            'avatar' => $validatedData['avatar'],
+            'email_verified_at' => now(),
+            'password' => bcrypt(Str::random(16)),
+        ]
+    );
 
-        // Check if the user has a role
-        if (!$authUser->role) {
-            return $this->responseService->error(trans('messages.please_select_role'), [], 400);
-        }
-
-        // If the user has a role, respond with the token only
-        return $this->respondWithToken($token, trans('messages.login_successful'));
+    
+    if (!$authUser->role) {
+        
+        return response()->json([
+            'success' => false,
+            'message' => trans('messages.please_select_role'),
+        ], 400);
     }
+
+    $token = auth()->login($authUser);
+
+    if (!$token) {
+       
+        return response()->json(['success' => false, 'message' => 'Token generation failed'], 500);
+    }
+
+    
+
+    return response()->json([
+        'success' => true,
+        'message' => trans('messages.login_successful'),
+        'access_token' => $this->respondWithToken($token),
+    ]);
+}
+
+
+
 
     /**
      * Assign or Update Role for the Authenticated User.
@@ -111,15 +141,13 @@ class AuthController extends Controller
             return $this->responseService->validationFailed($validator->errors()->toArray());
         }
 
-        // Retrieve the authenticated user
         $authUser = auth()->user();
 
         if (!$authUser) {
             return $this->responseService->error(trans('messages.user_not_authenticated'), [], 401);
         }
 
-        // Assign or update the role
-        $authUser->role = request()->role;
+        $authUser->role = request()->input('role');
         $authUser->save();
 
         return $this->responseService->success(trans('messages.role_assigned_successfully'), [
@@ -190,8 +218,4 @@ class AuthController extends Controller
      *
      * @return \Illuminate\Http\RedirectResponse
      */
-    public function redirectToGoogle()
-    {
-        return Socialite::driver('google')->redirect();
-    }
 }

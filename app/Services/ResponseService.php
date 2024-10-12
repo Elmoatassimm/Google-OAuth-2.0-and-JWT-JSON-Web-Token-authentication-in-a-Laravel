@@ -31,14 +31,14 @@ class ResponseService
      * @param int $status
      * @return JsonResponse
      */
-    public function error(string $message = 'Operation Failed', array $errors = [], int $status = 400): JsonResponse
-    {
-        return response()->json([
-            'status' => 'error',
-            'message' => __($message),
-            'errors' => $errors,
-        ], $status);
-    }
+    public function error(string $message = '', array $errors = [], int $status = 400): JsonResponse
+{
+    return response()->json([
+        'message' => $message,
+        'errors' => $errors,
+    ], $status);
+}
+
 
     /**
      * Return a not found response.
