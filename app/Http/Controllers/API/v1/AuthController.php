@@ -21,11 +21,8 @@ use GuzzleHttp\Psr7\Request;
 use Illuminate\Http\JsonResponse;
 use Laravel\Socialite\Contracts\User as SocialiteUser;
 
-use function Pest\Laravel\json;
-
 class AuthController extends Controller
 {
-
     protected $responseService;
 
     public function __construct(ResponseService $responseService)
@@ -42,19 +39,29 @@ class AuthController extends Controller
      */
     public function register(RegisterRequest $request)
     {
+        // Create a new user
         $user = new User;
         $user->name = $request->input('name');
         $user->email = $request->input('email');
-        $user->password = bcrypt($request->input('password'));
+        $user->password = bcrypt($request->input('password')); // Hash the password
         $user->role = $request->input('role');
         $user->save();
 
-        return $this->responseService->success(trans('messages.user_registered_successfully'), [
-            'user_id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'role' => $user->role,
-        ], 201);
+        // Generate a JWT token for the newly registered user
+        $token = auth()->login($user); // Assuming you're using the JWT Auth package
+
+        return $this->responseService->success(
+            trans('messages.user_registered_successfully'),
+            [
+                'user_id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role,
+                'access_token' => $token, // Include the token in the response
+                'token_type' => 'Bearer', // Specify the token type
+            ],
+            201
+        );
     }
 
     /**
@@ -80,50 +87,71 @@ class AuthController extends Controller
      */
     public function GoogleAuth(GoogleAuthRequest $request)
     {
-        
         $validatedData = $request->validated();
-    
 
-    
+        // Attempt to find the user by email
+        $authUser = User::firstOrNew(['email' => $validatedData['email']]);
 
-    
-    $authUser = User::firstOrCreate(
-        ['email' => $validatedData['email']],
-        [
+        // Store the Google ID for existing users
+        if (!$authUser->exists) {
+            $authUser->google_id = $validatedData['id']; // Save Google ID for new users
+        }
+
+        // Handle login or registration
+        if ($authUser->exists) {
+            return $this->GoogleLogin($authUser);
+        } else {
+            return $this->GoogleRegister($validatedData);
+        }
+    }
+
+    private function GoogleLogin(User $authUser)
+    {
+        // Check if the user has a role
+        if (!$authUser->role) {
+            return $this->responseService->error(trans('messages.please_select_role'), [], 400);
+        }
+
+        // Generate the token
+        $token = auth()->login($authUser);
+
+        if (!$token) {
+            return $this->responseService->error('Token generation failed', [], 500);
+        }
+
+        return $this->responseService->success(trans('messages.login_successful'), [
+            'access_token' => $this->respondWithToken($token),
+        ]);
+    }
+
+    private function GoogleRegister(array $validatedData)
+    {
+        // Create a new user
+        $authUser = new User();
+        $authUser->fill([
             'name' => $validatedData['name'],
             'google_id' => $validatedData['id'],
             'avatar' => $validatedData['avatar'],
+            'email' => $validatedData['email'],
+            'role' => $validatedData['role'],
             'email_verified_at' => now(),
-            'password' => bcrypt(Str::random(16)),
-        ]
-    );
+            'password' => bcrypt(Str::random(16)), // Generate a random password
+        ]);
 
-    
-    if (!$authUser->role) {
-        
-        return response()->json([
-            'success' => false,
-            'message' => trans('messages.please_select_role'),
-        ], 400);
+        // Save the user
+        $authUser->save();
+
+        // Automatically log in the new user
+        $token = auth()->login($authUser);
+
+        if (!$token) {
+            return $this->responseService->error('Token generation failed', [], 500);
+        }
+
+        return $this->responseService->success(trans('messages.registration_successful'), [
+            'access_token' => $this->respondWithToken($token),
+        ]);
     }
-
-    $token = auth()->login($authUser);
-
-    if (!$token) {
-       
-        return response()->json(['success' => false, 'message' => 'Token generation failed'], 500);
-    }
-
-    
-
-    return response()->json([
-        'success' => true,
-        'message' => trans('messages.login_successful'),
-        'access_token' => $this->respondWithToken($token),
-    ]);
-}
-
-
 
 
     /**
@@ -187,7 +215,11 @@ class AuthController extends Controller
      */
     public function refresh()
     {
-        return $this->respondWithToken(auth()->refresh(), trans('messages.token_refreshed_successfully'));
+        // Generate the token using the respondWithToken method
+        $tokenData = $this->respondWithToken(auth()->refresh());
+
+        // Use ResponseService to return the success response
+        return $this->responseService->success(trans('messages.token_refreshed_successfully'), $tokenData);
     }
 
     /**
@@ -210,7 +242,7 @@ class AuthController extends Controller
             $response['message'] = $message;
         }
 
-        return response()->json($response);
+        return $response; // Return the array instead of a JSON response
     }
 
     /**
